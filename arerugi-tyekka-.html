@@ -3,7 +3,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>AIアレルギーチェッカーV11 | N.S企画</title>
-    <script src="https://unpkg.com/tesseract.js@v4.0.1/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -1214,8 +1214,7 @@ body.child-mode{
                 </p>
             </div>
         </div>
-
-        <button class="camera-btn" onclick="document.getElementById('fileInput').click()" id="text-scan-btn">
+        <button class="camera-btn" onclick="handleScanButton()" id="text-scan-btn">
             <i class="fa-solid fa-camera-retro"></i>
             撮影して判定する
         </button>
@@ -1231,7 +1230,21 @@ body.child-mode{
     <div id="resultArea"></div>
 
 </main>
-
+<div id="cameraModal" class="modal" style="z-index: 6000; background: #000; padding:0;">
+    <div class="modal-content" style="width: 100%; height: 100%; max-width:100%; max-height:100%; display: flex; flex-direction: column; background: #000; border-radius: 0;">
+        <div style="padding: 15px 20px; color: white; display: flex; justify-content: space-between; align-items: center; background:#111;">
+            <h3 style="margin: 0; font-size:1.1rem;">成分表を撮影</h3>
+            <button onclick="closeCamera()" style="background: none; border: none; color: white; font-size: 1.8rem; cursor:pointer;">✖</button>
+        </div>
+        <div style="flex-grow: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; position: relative;">
+            <video id="cameraStream" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
+        </div>
+        <div style="padding: 25px; text-align: center; background: #111;">
+            <button id="shutterBtn" style="width: 76px; height: 76px; border-radius: 50%; background: white; border: 5px solid #475569; cursor: pointer; box-shadow: 0 0 15px rgba(255,255,255,0.3); transition:0.1s;" onmousedown="this.style.transform='scale(0.9)'" onmouseup="this.style.transform='scale(1)'"></button>
+            <div style="color: white; margin-top: 8px; font-size: 0.85rem; font-weight:bold;">シャッター</div>
+        </div>
+    </div>
+</div>
 <div id="pickerModal" class="modal">
     <div class="modal-content modern-modal">
 
@@ -1465,8 +1478,7 @@ body.child-mode{
     </div>
 
 </footer>
-
-    <script>
+<script>
     function fixOcrErrors(text){
         const fixes = {
             "小表":"小麦",
@@ -1520,8 +1532,6 @@ body.child-mode{
             };
             for(let id in dict) if(document.getElementById(id)) document.getElementById(id).innerText = dict[id];
         }
-        // ↓以下判別用コード↓
-        // 保存時にボタンの下に表示
         function saveAndClose() {
             const checked = Array.from(document.querySelectorAll('#pickerModal input:checked')).map(i => i.value);
             const free = document.getElementById('freeInput').value;
@@ -1548,7 +1558,6 @@ body.child-mode{
             }
         }
 
-        // 28品目対応
         const allergyDict = {
             "卵": ["卵", "たまご", "玉子", "鶏卵", "egg", "魚卵", "たらこ", "明太子", "かずのこ", "いくら","全卵","液卵","乾燥卵"],
             "乳": ["乳", "ミルク", "牛乳", "乳製品", "milk", "dairy", "バター", "チーズ", "生クリーム","牛乳","チーズ","ヨーグルト","脱脂粉乳","ホエイ","カゼイン","クリーム"],
@@ -1580,173 +1589,311 @@ body.child-mode{
             "ゼラチン": ["ゼラチン", "gelatin"]
         };
         
+let currentStream = null;
+
+function isMobileDevice() {
+    return /Mobi|Android|iPhone|iPad|Macintosh/i.test(navigator.userAgent) && ('ontouchstart' in window);
+}
+
+function handleScanButton() {
+    const checked = Array.from(document.querySelectorAll('#pickerModal input:checked')).map(i => i.value);
+    const free = document.getElementById('freeInput') ? document.getElementById('freeInput').value : '';
+    const targets = checked.concat(free ? [free] : []);
+    if (targets.length === 0) {
+        alert(document.body.className === 'child-mode' ? "さがすものをえらんでください" : "アレルゲンを選択してください");
+        return;
+    }
+    if (isMobileDevice()) {
+        openMobileCamera();
+    } else {
         const fileInput = document.getElementById('fileInput');
-        fileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+        if (fileInput) fileInput.click();
+    }
+}
 
-            const checked = Array.from(document.querySelectorAll('#pickerModal input:checked')).map(i => i.value);
-            const free = document.getElementById('freeInput').value;
-            if(checked.length === 0 && !free) {
-                alert("さがすものをえらんでください");
-                return;
-            }
-
-            document.getElementById('loading').style.display = 'flex';
-            document.getElementById('resultArea').style.display = 'none';
-
-            const processedImg = await preprocessImage(file);
-            const lang = document.getElementById('langSelect').value;
-            
-            try {
-                const worker = await Tesseract.createWorker({
-                    logger: m => {
-                        if(m.status === 'recognizing text') {
-                            const p = Math.round(m.progress * 100);
-                            document.getElementById('progressBar').style.width = p + '%';
-                            document.getElementById('percentText').innerText = p + '%';
-                            document.getElementById('secText').innerText = Math.max(0, Math.round((1 - m.progress) * 8));
-                        }
-                    }
-                });
-                await worker.loadLanguage(lang);
-                await worker.initialize(lang);
-                // ★ 成分表向け最適化設定
-
-                await worker.setParameters({
-                    tessedit_pageseg_mode: 6,
-                    tessedit_ocr_engine_mode: 3,
-                    preserve_interword_spaces: "1",
-                    language_model_penalty_non_freq_dict_word: 0,
-                    language_model_penalty_non_dict_word: 0,
-                    tessedit_char_whitelist:
-                    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一-龯ぁ-んァ-ンー（）()・、,%/gml"
-                });
-                const rotatedImg = await rotateImage(processedImg, 1);
-                const r1 = await worker.recognize(file);
-                const r2 = await worker.recognize(processedImg);
-                const r3 = await worker.recognize(rotatedImg);
-                let mergedText =
-                r1.data.text + " " +
-                r2.data.text + " " +
-                r3.data.text;
-                
-                mergedText = fixOcrErrors(mergedText);
-                await worker.terminate();
-                analyzeResult(mergedText);
-                
-                
-                } catch (err) {
-                    alert("エラーです。もう一度お試しください。");
-                    document.getElementById('loading').style.display = 'none';
-                }
-            });
-            async function rotateImage(base64, deg){
-                return new Promise(resolve=>{
-                    const img = new Image();
-                    img.onload = ()=>{
-                        const canvas = document.createElement("canvas");
-                        const ctx = canvas.getContext("2d");
-                        canvas.width = img.width;
-                        canvas.height = img.height;
-                        ctx.translate(canvas.width/2, canvas.height/2);
-                        ctx.rotate(deg * Math.PI / 180);
-                        ctx.drawImage(img, -img.width/2, -img.height/2);
-                        resolve(canvas.toDataURL("image/png"));
-                    };
-                    img.src = base64;
-                });
-            }
-
+async function openMobileCamera() {
+    const modal = document.getElementById('cameraModal');
+    if (modal) modal.style.display = 'flex';
+    
+    try {
+        currentStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+        });
+        const video = document.getElementById('cameraStream');
+        if (video) video.srcObject = currentStream;
         
-        async function preprocessImage(file){
-            return new Promise(resolve=>{
-                const img = new Image();
-                img.onload = ()=>{
-                    const canvas = document.getElementById("hiddenCanvas");
-                    const ctx = canvas.getContext("2d");
-                    canvas.width = img.width * 2;
-                    canvas.height = img.height * 2;
-                    ctx.drawImage(img,0,0,canvas.width,canvas.height)
-                    let imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
-                    let d = imgData.data;
-                    for(let i=0;i<d.length;i+=4){
-                        let r = d[i];
-                        let g = d[i+1];
-                        let b = d[i+2];
-                        let gray = 0.299*r + 0.587*g + 0.114*b;
-                        gray = (gray - 128) * 2.5 + 128;
-                        gray = Math.max(0, Math.min(255, gray));
-                        let v = gray > 140 ? 255 : 0;
-                        
-                        d[i]=v;
-                        d[i+1]=v;
-                        d[i+2]=v;
-                    }
-                    ctx.putImageData(imgData,0,0);
-                    resolve(canvas.toDataURL("image/png"));
-                };
-                img.src = URL.createObjectURL(file);
-            });
+        setupShutterEvent();
+    } catch (err) {
+        console.error(err);
+        closeCamera();
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput) fileInput.click();
+    }
+}
+
+function closeCamera() {
+    const modal = document.getElementById('cameraModal');
+    if (modal) modal.style.display = 'none';
+    if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+        currentStream = null;
+    }
+}
+
+function setupShutterEvent() {
+    const shutterBtn = document.getElementById('shutterBtn');
+    if (!shutterBtn) return;
+
+    const newShutterBtn = shutterBtn.cloneNode(true);
+    shutterBtn.parentNode.replaceChild(newShutterBtn, shutterBtn);
+
+    newShutterBtn.addEventListener('click', () => {
+        const video = document.getElementById('cameraStream');
+        if(!video || !video.videoWidth) {
+            alert("カメラ映像の読み込みを待っています...");
+            return;
         }
+
+        const canvas = document.createElement('canvas');
+        let w = video.videoWidth;
+        let h = video.videoHeight;
         
-        function analyzeResult(scannedText){
-            if(!scannedText || scannedText.length < 3){
-                console.log("OCR文字なし");
-                document.getElementById('loading').style.display = 'none';
-                return;
-            }
-            scannedText = fixOcrErrors(scannedText);       
-            const cleanText = scannedText
-            .replace(/[\s\n\r\t.,、。：:・()（）]/g,"")
-            .toLowerCase();
-            const checked = Array.from(document.querySelectorAll('#pickerModal input:checked')).map(i => i.value);
-            const free = document.getElementById('freeInput').value;
-            const targets = checked.concat(free ? [free] : []);
-            const detected = [];
-            targets.forEach(t => {
-                const dict = allergyDict[t] || [t];
-                if(dict.some(w => fuzzyMatch(cleanText, w.toLowerCase()))){
-                    detected.push(t);
-                }
-            });
-            const area = document.getElementById('resultArea');
-            area.style.display = 'block';
-            document.getElementById('loading').style.display = 'none';
-            if(detected.length > 0){
-                area.className = 'card status-danger';
-                area.innerHTML = `
-                <div class="result-icon"><i class="fa-solid fa-circle-xmark"></i></div>
-                <div class="result-title">対象アレルギーが入っています<br>(NG)</div>
-                <div class="result-detail">検出品目：${detected.join(', ')}</div>
-                <div class="warning-note-v7">
-                    ⚠ AI判定です。誤判定の可能性があります。<br>
-                    必ず商品の原材料表示を確認してください。
-                    </div>
-                    `;
-                    playSound(false);
-                }else{
-                    area.className = 'card status-safe';
-                    area.innerHTML = `
-                    <div class="result-icon"><i class="fa-solid fa-circle-check"></i></div>
-                    <div class="result-title">アレルギーはありません<br>(OK)</div>
-                    <div class="result-detail">アレルギーが見つかりませんでした</div>
-                    <div class="warning-note-v7">
-                        ⚠ AI解析結果です。<br>
-                        誤判定の可能性があります。<br>
-                        必ず原材料表示をご自身で確認してください。
-                        </div>
-                        `;
-                        playSound(true);
+        const maxSide = 450;
+        if (w > maxSide || h > maxSide) {
+            if (w > h) { h = Math.round(h * maxSide / w); w = maxSide; }
+            else { w = Math.round(w * maxSide / h); h = maxSide; }
+        }
+
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, w, h);
+
+        const base64Data = canvas.toDataURL("image/jpeg", 0.5);
+        closeCamera();
+
+        // 修正：外部サーバー送信ではなく、Blobオブジェクトに変換して直接OCRを開始
+        const blob = base64ToBlob(base64Data, "image/jpeg");
+        startOCR(blob);
+    });
+}
+
+// Base64データをBlobデータに変換するヘルパー関数
+function base64ToBlob(base64, mimeType) {
+    const bytes = atob(base64.split(',')[1]);
+    const ab = new ArrayBuffer(bytes.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < bytes.length; i++) {
+        ia[i] = bytes.charCodeAt(i);
+    }
+    return new Blob([ab], { type: mimeType });
+}
+
+async function startOCR(file) {
+    // 修正：ローディング画面（読み込み中）を表示させる処理を追加
+    const loadingElem = document.getElementById('loading');
+    if (loadingElem) {
+        loadingElem.style.display = 'flex';
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('percentText').innerText = '0%';
+        document.getElementById('secText').innerText = '--';
+    }
+
+    const processedImg = await preprocessImage(file);
+    const lang = document.getElementById('langSelect').value;
+    
+    try {
+        // 修正：Tesseract.js v4の正しい初期化方法（第1引数に言語、オプションにloggerを渡す）
+        const worker = await Tesseract.createWorker(lang, 1, {
+                logger: m => {
+                    // 裏側の動きを確認用（F12キーの開発者ツールで確認できます）
+                    console.log(m);
+
+                    // ① AI辞書のダウンロード中の進捗（初回のみ30MBの通信が発生します）
+                    if (m.status === 'loading language traineddata') {
+                        const p = Math.round(m.progress * 100);
+                        document.getElementById('progressBar').style.width = p + '%';
+                        document.getElementById('percentText').innerText = p + '% (DL中)';
+                    }
+                    
+                    // ② 実際の文字解読中の進捗
+                    if (m.status === 'recognizing text') {
+                        const p = Math.round(m.progress * 100);
+                        document.getElementById('progressBar').style.width = p + '%';
+                        document.getElementById('percentText').innerText = p + '%';
+                        document.getElementById('secText').innerText = Math.max(0, Math.round((1 - m.progress) * 8));
                     }
                 }
-                function fuzzyMatch(text, word){
-                    return text.includes(word) ||
-                    text.includes(word.replace(/ー/g,"")) ||
-                    text.includes(word.replace(/ッ/g,""));
-                }   
+            });
 
+        // 修正：v4では loadLanguage() や initialize() は自動実行されるため不要。パラメーター設定のみ行う
+        await worker.setParameters({
+            tessedit_pageseg_mode: 6,
+            tessedit_ocr_engine_mode: 3,
+            preserve_interword_spaces: "1",
+            language_model_penalty_non_freq_dict_word: 0,
+            language_model_penalty_non_dict_word: 0,
+            tessedit_char_whitelist:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一-龯ぁ-んァ-ンー（）()・、,%/gml"
+        });
+
+        const rotatedImg = await rotateImage(processedImg, 1);
+        const r1 = await worker.recognize(file);
+        const r2 = await worker.recognize(processedImg);
+        const r3 = await worker.recognize(rotatedImg);
+        let mergedText =
+        r1.data.text + " " +
+        r2.data.text + " " +
+        r3.data.text;
         
+        mergedText = fixOcrErrors(mergedText);
+        await worker.terminate();
+        analyzeResult(mergedText);
+        
+    } catch (err) {
+        console.error(err);
+        alert("解析中にエラーが発生しました。もう一度お試しください。");
+        document.getElementById('loading').style.display = 'none';
+    }
+}
+
+async function rotateImage(base64, deg){
+    return new Promise(resolve=>{
+        const img = new Image();
+        img.onload = ()=>{
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.translate(canvas.width/2, canvas.height/2);
+            ctx.rotate(deg * Math.PI / 180);
+            ctx.drawImage(img, -img.width/2, -img.height/2);
+            resolve(canvas.toDataURL("image/png"));
+        };
+        img.src = base64;
+    });
+}
+
+async function preprocessImage(file){
+    return new Promise(resolve=>{
+        const img = new Image();
+        img.onload = ()=>{
+            const canvas = document.getElementById("hiddenCanvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = img.width * 2;
+            canvas.height = img.height * 2;
+            ctx.drawImage(img,0,0,canvas.width,canvas.height)
+            let imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+            let d = imgData.data;
+            
+            for(let i=0;i<d.length;i+=4){
+                let r = d[i];
+                let g = d[i+1];
+                let b = d[i+2];
+                let gray = 0.299*r + 0.587*g + 0.114*b;
+                gray = (gray - 128) * 2.5 + 128;
+                gray = Math.max(0, Math.min(255, gray));
+                let v = gray > 140 ? 255 : 0;
+                
+                d[i]=v;
+                d[i+1]=v;
+                d[i+2]=v;
+            }
+            ctx.putImageData(imgData,0,0);
+            resolve(canvas.toDataURL("image/png"));
+        };
+        img.src = URL.createObjectURL(file);
+    });
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    const fileInputElem = document.getElementById('fileInput');
+    if (!fileInputElem) return;
+
+    fileInputElem.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        console.log("ファイルを選択しました。加工せず直送します:", file.type);
+        const reader = new FileReader();
+        reader.onload = async () => {
+            await startOCR(file);
+        };
+        
+        reader.onerror = () => {
+            alert("ファイルの読み込みに失敗しました。");
+        };
+        reader.readAsDataURL(file);
+    });
+});
+        
+function analyzeResult(scannedText){
+    const area = document.getElementById('resultArea');
+    
+    // 修正：文字がうまく認識できなかった時、サイレント終了せずエラーカードを表示する
+    if(!scannedText || scannedText.length < 3){
+        console.log("OCR文字なし");
+        document.getElementById('loading').style.display = 'none';
+        area.style.display = 'block';
+        area.className = 'card';
+        area.style.background = '#f1f5f9';
+        area.style.color = '#334155';
+        area.innerHTML = `
+            <div class="result-icon"><i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b;"></i></div>
+            <div class="result-title">文字を読み取れませんでした</div>
+            <div class="result-detail">ピントを合わせるか、明るい場所で、成分表が大きく写るようにハッキリ撮影してください。</div>
+        `;
+        return;
+    }
+    
+    scannedText = fixOcrErrors(scannedText);       
+    const cleanText = scannedText
+    .replace(/[\s\n\r\t.,、。：:・()（）]/g,"")
+    .toLowerCase();
+    const checked = Array.from(document.querySelectorAll('#pickerModal input:checked')).map(i => i.value);
+    const free = document.getElementById('freeInput').value;
+    const targets = checked.concat(free ? [free] : []);
+    const detected = [];
+    targets.forEach(t => {
+        const dict = allergyDict[t] || [t];
+        if(dict.some(w => fuzzyMatch(cleanText, w.toLowerCase()))){
+            detected.push(t);
+        }
+    });
+    
+    area.style.display = 'block';
+    document.getElementById('loading').style.display = 'none';
+    if(detected.length > 0){
+        area.className = 'card status-danger';
+        area.innerHTML = `
+        <div class="result-icon"><i class="fa-solid fa-circle-xmark"></i></div>
+        <div class="result-title">対象アレルギーが入っています<br>(NG)</div>
+        <div class="result-detail">検出品目：${detected.join(', ')}</div>
+        <div class="warning-note-v7">
+            ⚠ AI判定です。誤判定の可能性があります。<br>
+            必ず商品の原材料表示を確認してください。
+            </div>
+            `;
+            playSound(false);
+        }else{
+            area.className = 'card status-safe';
+            area.innerHTML = `
+            <div class="result-icon"><i class="fa-solid fa-circle-check"></i></div>
+            <div class="result-title">アレルギーはありません<br>(OK)</div>
+            <div class="result-detail">アレルギーが見つかりませんでした</div>
+            <div class="warning-note-v7">
+                ⚠ AI解析結果です。<br>
+                誤判定の可能性があります。<br>
+                必ず原材料表示をご自身で確認してください。
+                </div>
+                `;
+                playSound(true);
+            }
+        }
+        function fuzzyMatch(text, word){
+            return text.includes(word) ||
+            text.includes(word.replace(/ー/g,"")) ||
+            text.includes(word.replace(/ッ/g,""));
+        }   
     </script>
     
 </body>
